@@ -1,0 +1,184 @@
+
+#Feathered Billboard
+const ION_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/ion_projectile_billboard_feathered.tres")
+const NEUTRON_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/neutron_projectile_billboard_feathered.tres")
+const PARTICLE_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/particle_projectile_billboard_feathered.tres")
+const PHOTON_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/photon_projectile_billboard_feathered.tres")
+const PLASMA_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/plasma_projectile_billboard_feathered.tres")
+const POSITRON_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/positron_projectile_billboard_feathered.tres")
+const PULSE_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/pulse_projectile_billboard_feathered.tres")
+const TACHYON_PROJECTILE_MAT = preload("res://scenes/projectiles/gun_projectiles/materials/tachyon_projectile_billboard_feathered.tres")
+
+
+const plane_mesh  = preload("res://meshes/plane_mesh_face_z.tres")
+const sphere_mesh = preload("uid://djymlnwoc4sf2")
+var hidden_transform: Transform3D = Transform3D(Basis.IDENTITY,Vector3(0.0,-40000,0.0))
+
+const mat_table: Dictionary = {
+	"ION": ION_PROJECTILE_MAT,
+	"NEUTRON": NEUTRON_PROJECTILE_MAT,
+	"PARTICLE": PARTICLE_PROJECTILE_MAT,
+	"PHOTON": PHOTON_PROJECTILE_MAT,
+	"PLASMA": PLASMA_PROJECTILE_MAT,
+	"POSITRON": POSITRON_PROJECTILE_MAT,
+	"PULSE": PULSE_PROJECTILE_MAT,
+	"TACHYON": TACHYON_PROJECTILE_MAT,
+}
+
+
+
+#so after this, we should see if this version in c# performs better
+##################
+##### ARRAY MUILTIMESH ATTEMPT 2 ~0.3ms
+########################
+
+var material_map: Dictionary = {}
+#this is the difference, using arrays
+var projectile_pools: Array = []
+
+func _ready() -> void:
+	Bus.nodeless_projectiles = self
+	create_multi_meshes()
+	
+#same as before i think is fine
+func create_multi_meshes() -> void:
+	var materials: Array = [
+		ION_PROJECTILE_MAT, NEUTRON_PROJECTILE_MAT, 
+		PARTICLE_PROJECTILE_MAT, PHOTON_PROJECTILE_MAT,
+		PLASMA_PROJECTILE_MAT, POSITRON_PROJECTILE_MAT,
+		PULSE_PROJECTILE_MAT, TACHYON_PROJECTILE_MAT
+	]
+	for mat: ShaderMaterial in materials:
+		var mmi: MultiMeshInstance3D = MultiMeshInstance3D.new()
+		var mm: MultiMesh = MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = plane_mesh   #  sphere_mesh
+		mmi.cast_shadow = 0
+		mmi.lod_bias = 0.01
+		mm.instance_count = 0  # start empty
+		mmi.multimesh = mm
+		mmi.material_override = mat
+		add_child(mmi)
+		material_map[mat] = mmi
+
+
+
+func create_projectile_pool(amount: int, mat: ShaderMaterial, exclusion: SpaceshipBody, damage: Array) -> int:
+	var mmi: MultiMeshInstance3D = material_map.get(mat)
+	if not mmi:
+		printerr("no mmi")
+		return -1 # will probably crash everything, but thats okay, it will debug tell me
+	
+	var return_pool_index: int = projectile_pools.size()
+		
+	var current_count: int = mmi.multimesh.instance_count
+	mmi.multimesh.instance_count += amount
+	
+	
+	projectile_pools.append([mmi,[]]) #this should be the index of the pool, the gun will get this index back when it creates the pool
+	#the gun will be able then to call upon this pool and shoot an unactive bullet
+	
+	for i: int in amount:
+		var idx: int = current_count + i
+		mmi.multimesh.set_instance_transform(idx, Transform3D.IDENTITY)
+		projectile_pools[return_pool_index][1].append( #again, looking to use arrays, not dictionaries
+			[
+				false,#"active": 
+				Vector3.ZERO,#"position": 
+				Vector3.ZERO,#"direction": 
+				0.0,#"lifetime": 
+				-1.0,#"estimated_ttt": 
+				damage,#"damage": 
+				[exclusion],#"exclusions": 
+				idx#"material_index": 
+			]
+		) 
+
+
+
+	
+	return return_pool_index
+
+# i don't want to get fancy and try to create an array of active / inactive pools. the problem is that all that popping back and forth,
+#is expensive
+
+# the real solution should be multiprocessing of the vectors in a for loop, but we will get there i think
+
+
+func fire_projectile(pool_index: int, from_position: Vector3, direction: Vector3,target_pos: Vector3 = Vector3()) -> void:
+	var mmi: MultiMeshInstance3D = projectile_pools[pool_index][0]
+	for proj: Array in projectile_pools[pool_index][1]:
+		if proj[0] == false:
+			proj[0] = true
+			proj[1] = from_position
+			proj[2] = direction
+			proj[3] = 3.0
+			if target_pos != Vector3():
+				var target_distance: float = from_position.distance_to(target_pos)
+				proj[4] = (target_distance / Data.PROJECTILE_BASE_SPEED) + 0.1
+			else:
+				proj[4] = -1.0
+			mmi.multimesh.set_instance_transform(
+				proj[7], Transform3D(Basis.IDENTITY, from_position))
+			
+			break
+			
+# i think this structure should work, no?
+# path = projectile_pools[ 
+#   poolarray[
+	   # mmi, projectiles_array[
+			# singleprojarray[ 
+				#(0)active, 
+				#(1)position, 
+				#(2)direction 
+				#(3)lifetime
+				#(4)estimated_ttt
+				#(5)damage
+				#(6)[exclusion]
+				#(7)material_index
+				
+func _physics_process(delta: float) -> void:
+	process_nodeless_projectiles(delta)
+
+func process_nodeless_projectiles(delta: float) -> void:
+	for pool_index :int in projectile_pools.size():
+		var mmi: MultiMeshInstance3D = projectile_pools[pool_index][0]
+		for proj: Array in projectile_pools[pool_index][1]:
+			if proj[0] == true:
+				var dir: Vector3 = -proj[2] * Data.PROJECTILE_BASE_SPEED * delta
+				proj[1] += dir
+				proj[3] -= delta
+				if proj[3] <= 0.0:
+					mmi.multimesh.set_instance_transform(
+						proj[7], hidden_transform)
+					proj[0] = false
+					continue
+				mmi.multimesh.set_instance_transform(
+					proj[7], Transform3D(Basis.IDENTITY, proj[1]))
+				var ray_result: Dictionary = {}
+				if proj[4] != -1.0:
+					if  (proj[3]) > (3.0 - proj[4]): # 3.0 is maxtime
+						ray_result = perform_raycast(proj[1], proj[2], proj[6])
+					else:
+						continue
+				else:
+					ray_result = perform_raycast(proj[1], proj[2], proj[6])
+				
+				if not ray_result.is_empty():
+					if ray_result.collider.has_method("damage"):
+						ray_result.collider.call_deferred("damage", proj[5], 
+							ray_result.position, ray_result.position, null, [])
+					mmi.multimesh.set_instance_transform(
+						proj[7], hidden_transform)
+					proj[0] = false
+
+func perform_raycast(pos_from: Vector3, direction: Vector3,exclusions: Array) -> Dictionary:
+	var space_state: = get_world_3d().direct_space_state
+	var query: = PhysicsRayQueryParameters3D.create(
+		pos_from, 
+		pos_from + (direction * 8)
+	)
+	query.exclude = exclusions
+	query.hit_from_inside = true
+	return space_state.intersect_ray(query)
+	
